@@ -5828,7 +5828,7 @@ class _Batch:
     def remove(self, uid):
         return self.active.pop(uid, None) is not None
 
-    def next(self, **kwargs):
+    def decode_step(self):
         self.sizes.append(len(self.active))
         responses = []
         for uid, step in sorted(self.active.items()):
@@ -5845,7 +5845,10 @@ class _Batch:
                 del self.active[uid]
             else:
                 self.active[uid] += 1
-        return [], responses
+        return responses
+
+    def prefill_step(self):
+        return []
 
 
 class _IdleBatch(_Batch):
@@ -5963,9 +5966,10 @@ def _step_tokens(tokenizer, responses, *, progress=(), trim_space=True):
             cached_tokens=0,
         )
     }
+    gen._step(NS(decode_step=lambda: [], prefill_step=lambda: progress), active)
     for token, finish in responses:
         row = NS(uid=1, token=token, token_logprob=0.0, finish_reason=finish)
-        gen._step(NS(next=lambda **kw: (progress, [row])), active)
+        gen._step(NS(decode_step=lambda: [row], prefill_step=lambda: []), active)
     return list(queue.queue)
 
 
@@ -6228,6 +6232,31 @@ class TestResponseGenerator:
         thread.join(timeout=1.0)
         assert not thread.is_alive()
         assert isinstance(result[0], StopIteration)
+
+    def test_step_publishes_completed_response_before_failing_prefill(self):
+        gen, queue = _generator(), Queue()
+        active = {
+            1: dict(
+                rqueue=queue,
+                streamer=NS(advance=lambda *args: "ready"),
+                prompt_tps=10.0,
+                cached_tokens=0,
+            )
+        }
+        response = NS(uid=1, token=7, token_logprob=0.0, finish_reason="length")
+
+        def prefill_step():
+            token = queue.get_nowait()
+            assert token.text == "ready"
+            assert token.token == 7
+            assert token.finish_reason == "length"
+            assert queue.get_nowait() is None
+            assert 1 not in active
+            raise RuntimeError("unrelated prefill failed")
+
+        batch = NS(decode_step=lambda: [response], prefill_step=prefill_step)
+        with pytest.raises(RuntimeError, match="unrelated prefill failed"):
+            gen._step(batch, active)
 
     def test_step_streams_spm_subword_tokens_immediately(self):
         tokenizer = NS(
@@ -10231,7 +10260,9 @@ def test_prefill_memory_error_only_fails_the_refused_request():
     refused, peer = Queue(), Queue()
     active = {10: {"rqueue": refused}, 11: {"rqueue": peer}}
     error = APCAdmissionError("Cannot fit prefill", uid=10)
-    engine = SimpleNamespace(next=Mock(side_effect=error), remove=Mock())
+    engine = SimpleNamespace(
+        decode_step=lambda: [], prefill_step=Mock(side_effect=error), remove=Mock()
+    )
     generator = ResponseGenerator.__new__(ResponseGenerator)
     generator._step(engine, active)
     assert list(active) == [11]
