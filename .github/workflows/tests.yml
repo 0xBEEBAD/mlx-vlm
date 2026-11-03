@@ -131,7 +131,9 @@ jobs:
               tests/test_muse_spark.py
               tests/test_muse_spark_kernels.py
               tests/test_oxr.py
+              tests/test_position_embedding_resize.py
               tests/test_processors.py
+              tests/test_qwen3_vl_rope_index.py
               tests/test_speculative.py
           - group: media
             suite: Diffusion, audio, images, video & extraction
@@ -148,6 +150,7 @@ jobs:
               tests/test_llada_image.py
               tests/test_moss_image.py
               tests/test_muse_spark_video.py
+              tests/test_three_d.py
               tests/test_video_generation_models.py
     steps:
       - name: Checkout code
@@ -190,6 +193,9 @@ jobs:
         working-directory: mlx_vlm
         env:
           TEST_FILES: ${{ matrix.tests }}
+          PYTEST_ADDOPTS: >-
+            -vvv --max-worker-restart=0
+            -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
         run: |
           read -r -a tests <<< "$TEST_FILES"
           python -m pytest -q -n 3 --dist=worksteal --durations=30 \
