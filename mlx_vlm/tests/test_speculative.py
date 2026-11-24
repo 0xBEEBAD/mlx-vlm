@@ -5563,3 +5563,243 @@ def test_ernie_echo_shared_decoder_preserves_target_router():
     mx.eval(draft.draft_eval_state())
     assert target.layers[-1].ffn.e_score_correction_bias is original
     assert draft._target.layers[-1] is target.layers[-1]
+
+
+def granite_docling_target_and_drafter(num_mtp_layers=3):
+    from mlx_vlm.tests.test_models import TestGraniteDocling
+
+    mx.random.seed(7)
+    target = TestGraniteDocling._model()
+    text_config = replace(target.config.text_config, num_mtp_layers=num_mtp_layers)
+    draft = module("speculative.drafters.granite_docling_mtp")
+    drafter = draft.Model(draft.ModelConfig(text_config=text_config))
+    drafter.eval()
+    mx.eval(drafter.parameters())
+    return target, drafter
+
+
+def granite_docling_mtp_reference(target, drafter, tokens, hidden):
+    """Draft tokens of the head chain on a full sequence, with no cache.
+
+    ``hidden[:, i]`` predicted ``tokens[:, i + 1]``.
+    """
+    lm = target.language_model
+    embed = lm.model.embed_tokens
+    rows = hidden
+    read = tokens[:, 1:]
+    drafts = []
+    for k, head in enumerate(drafter.layers):
+        if k > 0:
+            # Head k reads one token later: the last tokens are draft tokens.
+            read = mx.concatenate([read[:, 1:], drafts[-1]], axis=1)
+        rows = head.predict(embed(read), rows, None)
+        drafts.append(mx.argmax(lm.output_projection(rows[:, -1:]), axis=-1))
+    return mx.concatenate(drafts, axis=1)
+
+
+@parametrize("accepted", [[0, 0, 0], [3, 3, 0], [1, 2, 3, 0, 2]])
+def test_granite_docling_mtp_cached_chain_matches_full_sequence(accepted):
+    target, drafter = granite_docling_target_and_drafter()
+    mx.random.seed(11)
+    total = 5 + sum(a + 1 for a in accepted)
+    tokens = mx.random.randint(0, 30, (1, total + 1))
+    hidden = mx.random.normal((1, total, 32))
+    greedy = lambda x: mx.argmax(x, -1)  # noqa: E731
+
+    drafter.reset(target)
+    drafter.prefill_from_target_hidden(
+        tokens[:, :5], hidden[:, :5], tokens[0, 5].item(), greedy, greedy=True
+    )
+    done = 5
+    for count in accepted:
+        equal(
+            drafter.draft_block(0, hidden[:, :1], None, 4, greedy, greedy=True),
+            granite_docling_mtp_reference(
+                target, drafter, tokens[:, : done + 1], hidden[:, :done]
+            ),
+        )
+        # The verify block is the last bonus token and the accepted draft tokens.
+        drafter.accept_verified_tokens(
+            hidden[:, done : done + 4],
+            tokens[:, done + 1 : done + 4],
+            count,
+            tokens[0, done + 1 : done + count + 2].tolist(),
+            greedy,
+            greedy=True,
+        )
+        done += count + 1
+    equal(
+        drafter.draft_block(0, hidden[:, :1], None, 4, greedy, greedy=True),
+        granite_docling_mtp_reference(
+            target, drafter, tokens[:, : done + 1], hidden[:, :done]
+        ),
+    )
+    # Draft positions are removed: head k keeps one row less than head k - 1.
+    sequence = drafter._sequences[0]
+    drafter._trim_draft(sequence)
+    assert [c.offset for c in sequence.cache] == [done, done - 1, done - 2]
+
+
+def test_granite_docling_mtp_batch_rows_match_single_rows():
+    target, drafter = granite_docling_target_and_drafter()
+    mx.random.seed(13)
+    greedy = lambda x: mx.argmax(x, -1)  # noqa: E731
+    tokens = mx.random.randint(0, 30, (2, 13))
+    hidden = mx.random.normal((2, 12, 32))
+    padding = [0, 3]
+    accepted = [3, 1]  # The rows accept different numbers of draft tokens.
+
+    def single(row):
+        pad, count = padding[row], accepted[row]
+        drafter.reset(target)
+        drafter.prefill_from_target_hidden(
+            tokens[row : row + 1, pad:8],
+            hidden[row : row + 1, pad:8],
+            tokens[row, 8].item(),
+            greedy,
+            greedy=True,
+        )
+        first = drafter.draft_block(0, hidden[:1, :1], None, 4, greedy, greedy=True)
+        drafter.accept_verified_tokens(
+            hidden[row : row + 1, 8:12],
+            tokens[row : row + 1, 9:12],
+            count,
+            tokens[row, 9 : 10 + count].tolist(),
+            greedy,
+            greedy=True,
+        )
+        return first, drafter.draft_block(
+            0, hidden[:1, :1], None, 4, greedy, greedy=True
+        )
+
+    expected = [single(row) for row in range(2)]
+    drafter.reset(target)
+    drafter.prefill_from_target_hidden(
+        tokens[:, :8],
+        hidden[:, :8],
+        tokens[:, 8],
+        greedy,
+        greedy=True,
+        left_padding=padding,
+    )
+    bonus = tokens[:, 8]
+    equal(
+        drafter.draft_block(bonus, hidden[:, :1], None, 4, greedy, greedy=True),
+        mx.concatenate([first for first, _ in expected]),
+    )
+    drafter.accept_verified_tokens_batch(
+        hidden[:, 8:12],
+        tokens[:, 9:12],
+        accepted,
+        [tokens[row, 9 : 10 + accepted[row]].tolist() for row in range(2)],
+        greedy,
+        greedy=True,
+    )
+    equal(
+        drafter.draft_block(bonus, hidden[:, :1], None, 4, greedy, greedy=True),
+        mx.concatenate([second for _, second in expected]),
+    )
+    drafter.filter_batch(mx.array([1]))
+    assert len(drafter._sequences) == 1
+
+
+def test_granite_docling_mtp_head_logits_are_not_scaled():
+    target, drafter = granite_docling_target_and_drafter()
+    drafter.reset(target)
+    lm = target.language_model
+    assert lm.logits_scaling != 1
+    hidden = mx.random.normal((1, 2, 32))
+    # The division would make the head distribution too flat to sample from.
+    equal(
+        drafter._lm_head_fn(hidden),
+        lm.logits_from_hidden(hidden) * lm.logits_scaling,
+    )
+
+
+def test_granite_docling_mtp_load_and_split(tmp_path):
+    target, reference = granite_docling_target_and_drafter()
+    expected = dict(tree_flatten(reference.parameters()))
+    config = {
+        "model_type": "granite_docling",
+        "text_config": {
+            "model_type": "granite_docling_text",
+            **{
+                key: getattr(reference.config.text_config, key)
+                for key in (
+                    "hidden_size",
+                    "intermediate_size",
+                    "num_hidden_layers",
+                    "num_attention_heads",
+                    "num_key_value_heads",
+                    "vocab_size",
+                    "max_position_embeddings",
+                    "logits_scaling",
+                    "residual_multiplier",
+                    "attention_multiplier",
+                    "rope_parameters",
+                    "num_mtp_layers",
+                )
+            },
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    source = {"mtp." + key: value for key, value in expected.items()}
+    # The target tensors of the same checkpoint are not part of the drafter.
+    source["model.text_model.norm.weight"] = mx.ones((32,))
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), source)
+
+    drafter, kind = load_drafter(str(tmp_path))
+    assert kind == "mtp"
+    assert drafter.config.block_size == 4
+    equal(dict(tree_flatten(drafter.parameters())), expected)
+    drafter.validate_target_compatibility(target)
+
+    output = split_mtp(str(tmp_path), str(tmp_path / "draft"))
+    standalone, kind = load_drafter(str(output))
+    assert kind == "mtp"
+    equal(dict(tree_flatten(standalone.parameters())), expected)
+
+
+@parametrize("media", ["text", "image"])
+@parametrize("dtype", [mx.float32, mx.bfloat16])
+@parametrize("block_size", [None, 2])
+def test_granite_docling_mtp_generation_matches_autoregressive(
+    media, dtype, block_size, monkeypatch
+):
+    from mlx_vlm.tests.test_models import TestGraniteDocling
+
+    target, drafter = granite_docling_target_and_drafter()
+    target.set_dtype(dtype)
+    drafter.set_dtype(dtype)
+    prefill = Mock(wraps=drafter.prefill_from_target_hidden)
+    monkeypatch.setattr(drafter, "prefill_from_target_hidden", prefill)
+    ids = mx.array([[1, 2, 3, 4, 5, 6]])
+    pixels = None
+    kwargs = {}
+    if media == "image":
+        ids = TestGraniteDocling._prompt(4, 2)
+        pixels = mx.random.normal((1, 2, 3, 16, 16))
+    common = dict(max_tokens=24, temperature=0, prefill_step_size=2, **kwargs)
+    expected = [t for t, _ in generate_step(ids, target, pixels, None, **common)]
+    actual = [
+        t
+        for t, _ in generate_step(
+            ids,
+            target,
+            pixels,
+            None,
+            draft_model=drafter,
+            draft_kind="mtp",
+            draft_block_size=block_size,
+            **common,
+        )
+    ]
+    assert actual == expected
+    # Random heads are wrong most of the time, so drafts are rejected too.
+    assert drafter.draft_lens and any(
+        a < d for a, d in zip(drafter.accept_lens, drafter.draft_lens)
+    )
+    # The heads read every prompt position, so the prompt is not chunked.
+    prompt_ids, prompt_hidden = prefill.call_args.args[:2]
+    assert prompt_ids.tolist() == ids.tolist()
+    assert prompt_hidden.shape[1] == ids.shape[1]

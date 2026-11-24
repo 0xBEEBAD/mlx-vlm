@@ -168,7 +168,7 @@ class Model(nn.Module):
         )
         sanitized = {}
         for k, v in weights.items():
-            # Multi-token prediction heads for serving engines; not part of this model.
+            # The MTP heads load as a drafter (speculative/drafters/granite_docling_mtp).
             if k.startswith("mtp."):
                 continue
             for source, target in prefixes:

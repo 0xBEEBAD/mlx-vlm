@@ -346,6 +346,7 @@ MTP_SPLITTERS: Dict[str, str] = {
     "glm4_moe_lite": "mlx_vlm.speculative.drafters.glm4_moe_lite_mtp.split:Glm4MoeLiteMTPSplitter",
     "glm5_next": "mlx_vlm.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",
     "glm5_next_text": "mlx_vlm.speculative.drafters.glm5_next_mtp.split:Glm5NextMTPSplitter",
+    "granite_docling": "mlx_vlm.speculative.drafters.granite_docling_mtp.split:GraniteDoclingMTPSplitter",
     "glm_moe_dsa": "mlx_vlm.speculative.drafters.glm_moe_dsa_mtp.split:GlmMoeDsaMTPSplitter",
     "inkling": "mlx_vlm.speculative.drafters.inkling_mtp.split:InklingMTPSplitter",
     "inkling_mm_model": "mlx_vlm.speculative.drafters.inkling_mtp.split:InklingMTPSplitter",
