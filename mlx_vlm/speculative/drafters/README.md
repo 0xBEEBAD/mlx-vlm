@@ -49,6 +49,7 @@ source (which still carries `mtp.*`).
 | `glm5_next`, `glm5_next_text` | `glm5_next_mtp` | Yes |
 | `glm_moe_dsa` | `glm_moe_dsa_mtp` | Yes |
 | `inkling`, `inkling_mm_model` | `inkling_mtp` | Yes |
+| `granite_docling` | `granite_docling_mtp` | Yes; see [Granite for Docling](../../models/granite_docling/README.md#speculative-decoding) |
 | `nemotron_h`, `nemotron_h_omni`, `nemotron_h_nano_omni` | `nemotron_h_mtp` | Yes; see [Nemotron Omni](../../models/nemotron_h_nano_omni/README.md#native-mtp) |
 | `glm4_moe_lite` | `glm4_moe_lite_mtp` | Extraction only; no drafter runtime |
 

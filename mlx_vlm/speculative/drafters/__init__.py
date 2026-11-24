@@ -30,6 +30,7 @@ DRAFTER_KIND_BY_MODEL_TYPE = {
     "glm4_moe_lite_mtp": "mtp",
     "glm5_next_mtp": "mtp",
     "glm_moe_dsa_mtp": "mtp",
+    "granite_docling_mtp": "mtp",
     "hy_v4_mtp": "mtp",
     "inkling_mtp": "mtp",
     "inkling2_dspark": "dflash",

@@ -51,7 +51,28 @@ In Python, pass `fine_route=True` to `generate`. For `batch_generate`, set
 router to tell which pages need the fine path. The 2B checkpoint has no fine
 path.
 
+## Speculative decoding
+
+Checkpoints with `mtp.layers.*` tensors have multi-token prediction heads.
+They draft up to three tokens for each step of the model. The model verifies
+the draft tokens, so greedy output does not change, except when two tokens
+are equal within the precision of the weights. Give the original checkpoint as
+the draft model:
+
+```sh
+python -m mlx_vlm.generate --model ./granite-for-docling-2b-8bit \
+  --draft-model ibm-granite/granite-for-docling-2b \
+  --image page.png --prompt "<doclang>" --max-tokens 4096 --temperature 0
+```
+
+`mlx_vlm.convert --mtp` also writes the heads to `<mlx-path>-mtp`, which you
+can give as the draft model.
+
+The gain is largest for greedy decoding of one page at a time. In a batch,
+each page accepts its own number of draft tokens, but the gain is smaller.
+With sampling, the model accepts fewer draft tokens. The heads of the 500M
+checkpoint accept fewer draft tokens, so they give little or no gain.
+
 ## Limits
 
 - No tool calling: the chat template has no tool format.
-- The `mtp.*` heads in the checkpoint are not loaded.

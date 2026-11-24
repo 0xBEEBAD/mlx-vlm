@@ -178,13 +178,30 @@ class LanguageModel(nn.Module):
             cache=cache,
             deepstack_visual_embeds=deepstack_visual_embeds,
         )
-        projection = (
-            self.model.embed_tokens.as_linear
-            if self.config.tie_word_embeddings
-            else self.lm_head
+        # Speculative decoding reads the normalized hidden states.
+        hidden_states = [h] if kwargs.get("return_hidden") else None
+        shared_kv_states = {} if kwargs.get("return_shared_kv") else None
+        logits = None
+        if not kwargs.get("skip_logits"):
+            logits = self.logits_from_hidden(h, logits_to_keep)
+        return LanguageModelOutput(
+            logits=logits,
+            hidden_states=hidden_states,
+            shared_kv_states=shared_kv_states,
         )
-        logits = project_logits(h, projection, logits_to_keep)
-        return LanguageModelOutput(logits=logits / self.logits_scaling)
+
+    @property
+    def output_projection(self):
+        """The vocabulary projection, before the division by ``logits_scaling``."""
+        if self.config.tie_word_embeddings:
+            return self.model.embed_tokens.as_linear
+        return self.lm_head
+
+    def logits_from_hidden(
+        self, hidden: mx.array, logits_to_keep: Optional[int] = 0
+    ) -> mx.array:
+        logits = project_logits(hidden, self.output_projection, logits_to_keep)
+        return logits / self.logits_scaling
 
     @property
     def layers(self):

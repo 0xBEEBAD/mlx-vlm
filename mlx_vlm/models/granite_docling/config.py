@@ -25,6 +25,7 @@ class TextConfig(BaseModelConfig):
     rope_parameters: Optional[Dict[str, Union[float, str]]] = None  # Transformers 5
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
     tie_word_embeddings: bool = True
+    num_mtp_layers: int = 0  # MTP heads in the checkpoint (speculative drafter)
 
     def __post_init__(self):
         if self.num_key_value_heads is None:
